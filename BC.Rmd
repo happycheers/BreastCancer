@@ -1,0 +1,300 @@
+---
+title: "Data Science: Capstone - Create Your Own Project (Prediction of Breast Cancer)"
+author: "KLC"
+date: "May 1, 2020"
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Objective
+
+The aim of this project is to build a machine learning algorithm to predict whether a breast mass cell is "benign" or "malignant". Breast lumps that are benign are mostly non-cancerous and not life threatening. They do not spread outside of the breast. Malignant lumps are cancerous however. Such kind of prediction algorithm could help medical practitioners to detect and diagnose breast cancer.
+
+We will train a few machine learning models and measure their performance with their prediction sensitivity and F1 score. Our aim is to choose a model which yields the highest sensitivity (i.e. low false-negative) and F1 score.
+
+This report will first explore the dataset, then analyse several models, compare their performance and conclude the result.
+
+# Dataset
+
+Breast Cancer Wisconsin (Diagnostic) DataSet obtained from Kaggle (https://www.kaggle.com/lbronchal/breast-cancer-dataset-analysis) is used for this project. Such data, collected in 1993 by the University of Wisconsin, contains 569 samples of measurements on cells in suspicious lumps in a women's breast. 20% of the data will be used for testing, while the remaining will be used for training the machine learning algorithm. 
+
+**Description of data:**
+The dataset contains 569 observations with 33 variables including 30 "features" as listed below. "Features" are computed from a digitized image of a fine needle aspirate (FNA) of a breast mass, which describe characteristics of the cell nuclei present in the image. 
+
+*Attribute Information:*
+
+1) ID number
+2) Diagnosis (M = malignant, B = benign)
+3-32)
+
+*Ten real-valued features are computed for each cell nucleus:*
+
+a) radius (mean of distances from center to points on the perimeter)
+b) texture (standard deviation of gray-scale values)
+c) perimeter
+d) area
+e) smoothness (local variation in radius lengths)
+f) compactness (perimeter^2 / area - 1.0)
+g) concavity (severity of concave portions of the contour)
+h) concave points (number of concave portions of the contour)
+i) symmetry
+j) fractal dimension ("coastline approximation" - 1)
+
+The mean, standard error and "worst" or largest (mean of the three largest values) of these features were computed for each image, resulting in 30 features. All feature values are recorded with 4 significant digits.
+
+```{r Install packages, include=FALSE}
+################################
+# Install packages and libraries
+################################
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(corrplot)) install.packages("corrplot", repos = "http://cran.us.r-project.org")
+if(!require(klaR)) install.packages("klaR", repos = "http://cran.us.r-project.org")
+if(!require(nnet)) install.packages("nnet", repos = "http://cran.us.r-project.org")
+library(rmarkdown)
+library(ggplot2)
+library(lubridate)
+library(tidyverse) 
+library(corrplot)
+library(caret)
+library(nnet)
+```
+
+```{r Load dataset}
+################################
+# Load dataset
+################################
+
+data <- read.csv("https://raw.githubusercontent.com/happycheers/BreastCancer/master/data.csv")
+```
+
+# Data exploration
+
+First, let's grab an overview of the dataset. 
+
+```{r structure}
+#Structure of the dataset
+str(data)
+```
+
+```{r head}
+# First 6 rows and header 
+head(data)
+```
+
+```{r summary}
+# Summary of statitics
+summary(data)
+```
+
+```{r diagnosis ratio}
+# Summarize number of diagnosis ("B" and "M") in the dataset
+data %>% group_by(diagnosis) %>% summarize(n())
+```
+
+We note from the above that the diagnosis is slightly unbalanced. We may have to adjust the data when using some models so that they can work properly.
+
+# Data cleaning
+
+```{r data cleaning}
+################################
+# Data cleaning
+################################
+
+# Remove columns 1 and 33 as irrelevant
+data <- data[,-33]
+data <- data[,-1]
+
+# Check if there are missing values
+map_int(data, function(.x) sum(is.na(.x)))
+```
+
+We now have removed the 1st coloumn "id" and the 33rd coloumn "X" as they appear irrelevant to our prediction. We have also checked that there are no missing values in the dataset.
+
+Some models such as naive bayes do not work well with highly-correlated variables as they assume the predictor variables are independent with each other. Therefore, we will check if the variables of the dataset are highly correlated and will remove them if their correlation coefficients are higher than 0.9 or lower than -0.9.
+
+```{r variable correlation}
+# Plot the correlation among variables
+corrplot(cor(data[,2:31]) , main=" Corrplot" , method = "circle" , type = "upper")
+
+# Identify variables with correlation coefficient higher than 0.9 or lower than -0.9
+to_drop_col <- findCorrelation(cor(data[,2:31]), cutoff=0.9)
+
+# Adjust the result by one column shift
+to_drop_col <- to_drop_col + 1
+
+# Remove highly correlated variables
+new_data <- data[,-to_drop_col]
+
+# Cross-check if highly correlated variables have been removed
+findCorrelation(cor(new_data[,2:21]), cutoff=0.9)
+```
+
+Now, we are going to divide the dataset into training (80%) and testing (20%) datasets.
+
+```{r create train and test set}
+##################################
+# Create training and testing sets
+##################################
+
+# Divide the data set into training (80%) and testing (20%) sets
+set.seed(1234, sample.kind="Rounding")
+index <- createDataPartition(new_data$diagnosis, times=1, p=0.8, list = FALSE)
+train <- new_data[index, ]
+test <- new_data[-index, ]
+```
+
+# Data Analysis - Modelling Approach
+
+In the following, we will train a naive bayes model, logistic regression model, k-nearest neighbor model and random forest model.
+
+```{r cross validation}
+# Cross validatin with 10 folds
+tc <- trainControl(method="cv", number = 10, classProbs=TRUE, summaryFunction = twoClassSummary)
+```
+
+## Naive Bayes Model
+
+```{r naive bayes, warning=FALSE}
+################################
+# Naive bayes model
+################################
+
+# Train a naive bayes model
+naiveb_model <- train(diagnosis~., 
+                      train, 
+                      method="nb", 
+                      metric = "ROC",  
+                      preProcess=c('center','scale'), 
+                      trControl=tc)
+
+# Predict testing set
+naiveb_pred <- predict(naiveb_model, test)
+
+# summarize results (set positive as "M" so that the sensitivity is correct)
+naiveb_result <- confusionMatrix(naiveb_pred, test$diagnosis, positive = "M")
+naiveb_result
+```
+
+## Logistic Regression Model
+
+```{r logistic regression, warning=FALSE}
+################################
+# Logistic regression model
+################################
+
+# Train a logistic regression model
+glm_model <- train(diagnosis~., 
+                      train, 
+                      method="glm", 
+                      metric = "ROC",  
+                      preProcess=c('center','scale'), 
+                      trControl=tc)
+
+# Predict testing set
+glm_pred <- predict(glm_model, test)
+
+# summarize results (set positive as "M" so that the sensitivity is correct)
+glm_result <- confusionMatrix(glm_pred, test$diagnosis, positive = "M")
+glm_result 
+```
+
+## K-nearest Neighbor Model
+
+```{r KNN}
+################################
+# K-nearest neighbor model
+################################
+
+# Train a KNN model
+knn_model <- train(diagnosis~., 
+                      train, 
+                      method="knn", 
+                      metric = "ROC",  
+                      preProcess=c('center','scale'), 
+                      tuneLength=10,
+                      trControl=tc)
+
+# Predict testing set
+knn_pred <- predict(knn_model, test)
+
+# summarize results (set positive as "M" so that the sensitivity is correct)
+knn_result <- confusionMatrix(knn_pred, test$diagnosis, positive = "M")
+knn_result 
+```
+
+## Random Forest Model
+
+```{r random forest}
+################################
+# Random forest model
+################################
+
+# Train a random forest model
+rf_model <- train(diagnosis~., 
+                      train, 
+                      method="rf", 
+                      metric = "ROC",  
+                      preProcess=c('center','scale'), 
+                      trControl=tc)
+
+# Predict testing set
+rf_pred <- predict(rf_model, test)
+
+# summarize results (set positive as "M" so that the sensitivity is correct)
+rf_result <- confusionMatrix(rf_pred, test$diagnosis, positive = "M")
+rf_result 
+```
+
+# Results 
+
+The results of each model developed above are summarized below:
+
+```{r result}
+################################
+# Results
+################################
+
+# Summarize the confusion matrixes of each model
+result_list <- list (naive_bayes = naiveb_result,
+                     logistic_regression = glm_result,
+                     KNN = knn_result,
+                     random_forest = rf_result)
+results <- sapply (result_list, function(x) x$byClass)
+
+# Print the results in a table format
+results %>% knitr::kable()
+```
+
+```{r select best model}
+# Identify the best results for each metric in confusion matrix
+best_results <- apply(results, 1, which.is.max)
+
+# Match the best results with corresponding model
+report <- tibble (metric = names(best_results),
+                    best_model = colnames(results)[best_results],
+                    value=mapply(function(x,y) {results[x,y]},
+                    names(best_results),
+                    best_results))
+rownames(report)<-NULL
+
+# Print the best model identified for each metric
+report
+```
+
+There has been discussion which metric, say accuracy, precision, recall or F1 score, we should use to select the "best model". There is no one-size-fit-all answer. **For our case on predicitng whether a breast mass cell is cancerous, undoubtedly the cost associated with false negative is high**. The consequence can be very serious for a patient where his/her cell is predicted as negative (benign) while it is actually positive (malignant). In this regard, **the sensitivity, which calculates how many of actual positives a model capture, would be more relevant in this case**. While false positives appear to cause less serious consequence in our case, it does not mean costless. A healthy person diagnosed with cancer will result in stress and high medical costs. To this end, we should consider F1 score as well, which seek a balance between sensitivity and specificity.
+
+Based on the result table above, the **best model should be logistic regression model** which has the highest sensitivity and F1 score. 
+
+# Conclusion 
+
+In this project, We have developed four machine learning models to predict classification of a breast mass cell as "benign" or "malignant". Then, we have discussed which metric we should use to select the best model. Finally, we have selected logistic regression model as the most optimal one given its good sensitivity and F1 score. To further improve our prediction, we can in fact build more models such as neutral network and support vector machine to explore if there are any better models than the one we chose.
+
+This kind of classification prediction will have a wide use across industries, such as predicitng no-shows for medical appointments, spam emails or fradulent transactions. 
